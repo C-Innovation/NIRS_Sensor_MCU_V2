@@ -315,10 +315,12 @@ void StartAiTask(void *argument)
     if (nirs_nn_setup() != 0) {
         Error_Handler();
     }
-    nirs_nn_init(&g_nn, 1000.0f);
+    /* Частота кадров = частота сценариев измерения (100 Гц). Все постоянные
+       времени ядра и предфильтра заданы в секундах и пересчитываются от неё. */
+    nirs_nn_init(&g_nn, (float)NIRS_SAMPLE_RATE_HZ);
 
     nirs_cfg_t cfg;
-    nirs_defaults(&cfg, 1000.0f);
+    nirs_defaults(&cfg, (float)NIRS_SAMPLE_RATE_HZ);
     nirs_init(&g_ref, &cfg);
 
     NirsFilteredData_t AiPack;

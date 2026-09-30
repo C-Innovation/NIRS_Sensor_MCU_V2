@@ -31,6 +31,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "freerrtos_inc.h"
+#include "analog_driver.h"
 #include "usb_drd_fs.h"
 /* USER CODE END Includes */
 
@@ -267,6 +268,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	if(htim->Instance == TIM2)
 	{
 		TimeSeconds++;
+	}
+	if(htim->Instance == TIM5)
+	{
+		/* Период сценария измерения (100 Гц): старт 740/фон/850/фон */
+		analog_driver::CycleStart();
 	}
   /* USER CODE END Callback 1 */
 }
