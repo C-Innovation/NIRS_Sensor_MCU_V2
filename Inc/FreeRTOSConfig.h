@@ -173,6 +173,12 @@ header file. */
 /* USER CODE BEGIN Defines */
 /* Section where parameter definitions can be added (for instance, to override default ones in FreeRTOS.h) */
 #define configCHECK_FOR_STACK_OVERFLOW  2
+
+/* Tickless idle: пока все задачи ждут, SysTick останавливается, ядро спит в WFI.
+   Подробности и ограничения - ExtDrivers/power_mgmt.h. Порт ARM_CM33 использует
+   SysTick (24 бита, тактирование HCLK), максимальный сон ~100 мс. */
+#define configUSE_TICKLESS_IDLE                  1
+#define configEXPECTED_IDLE_TIME_BEFORE_SLEEP    2
 /* USER CODE END Defines */
 
 #endif /* __FREERTOS_CONFIG_H */

@@ -48,6 +48,7 @@ uint8_t UserRxBufferFS[APP_RX_DATA_SIZE];
 uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 extern USBD_HandleTypeDef hUsbDeviceFS;
 extern RingBuffer _UsbRingBuffer;
+void UsbRxNotifyFromISR(void);   /* app_freertos.cpp: будит MainTask */
 /** @defgroup USBD_CDC_Private_Defines
   * @{
   */
@@ -214,6 +215,7 @@ static int8_t TEMPLATE_Receive(uint8_t *Buf, uint32_t *Len)
 	USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
   _UsbRingBuffer.write(Buf, Len[0]);
+  UsbRxNotifyFromISR();
   return (USBD_OK);
 }
 
