@@ -18,6 +18,11 @@
  *   ... после 4-го этапа TIM3 останавливается, светодиоды погашены,
  *        до следующего update TIM5 (9 мс при 100 Гц) ничего не происходит.
  *
+ *   Сон MP3320A (ANALOG_MP3320_SLEEP_IN_IDLE): после 4-го этапа EN=0 (ток покоя
+ *   ~1 мА -> ~1.5 мкА), за ANALOG_MP3320_WAKE_LEAD_US до следующего сценария
+ *   compare-прерывание TIM5 CC1 пишет EN=1 (ChipWake). Между EN=0 и любой
+ *   следующей I2C-операцией должно пройти >1.5 мс (даташит Rev 1.1).
+ *
  *   t, мкс   0      250     500     750     1000              10000
  *   светодиод 740  ->  темно ->  850  ->  темно -> (всё выкл до следующего цикла)
  *   отсчёт АЦП  -    740     фон-740   850     фон-850
@@ -67,6 +72,14 @@ static volatile uint8_t  s_currentCode = 0;
 volatile uint32_t g_analog_cycles        = 0;  /* завершённых сценариев            */
 volatile uint32_t g_analog_cycle_aborts  = 0;  /* сценарий не успел / сбой DMA     */
 volatile uint32_t g_analog_i2c_errors    = 0;  /* неудачных записей в MP3320A      */
+volatile uint32_t g_analog_sleep_active  = 0;  /* 1 - MP3320A засыпает между сценариями */
+
+/* Сон MP3320A между сценариями (см. ANALOG_MP3320_SLEEP_IN_IDLE).
+   Значения REG01h с EN=1 / EN=0 запоминаются в Init(): остальные биты
+   регистра (DMBLK, CH4MD, BLK_PWM, EN_CP) в прерывании не читаются. */
+static volatile bool     s_sleepEnabled = false;
+static uint8_t           s_modeOn  = 0;
+static uint8_t           s_modeOff = 0;
 
 extern DMA_QListTypeDef MainAdcQueue;
 extern DMA_HandleTypeDef handle_GPDMA1_Channel10;
@@ -85,6 +98,25 @@ extern SemaphoreHandle_t iic2RxTxMutex;
  *  0xFC -> включены CH3+CH4  (850 нм)
  *  0xF0 -> все каналы выключены (измерение фона)
  * ------------------------------------------------------------------------- */
+/* Запись регистра MP3320A из прерывания. Единственное место, где выбирается
+   способ доступа к I2C (ADC_LED_SWITCH_IN_ISR). Мьютекс здесь НЕ берётся:
+   xSemaphoreTakeFromISR() для мьютексов не допускается (нет наследования
+   приоритета, владелец не запоминается), а результат раньше игнорировался,
+   то есть защиты не было вовсе. Взаимное исключение обеспечено иначе:
+   после Init() I2C2 использует только ISR. */
+static void WriteRegIrq(uint8_t reg, uint8_t val)
+{
+	HAL_StatusTypeDef ret;
+#if ADC_LED_SWITCH_IN_ISR
+	/* Регистровая запись с ограниченным спин-таймаутом: без HAL и HAL_GetTick(). */
+	ret = MP3320A_WriteReg_ISR(&hmp3320, reg, val);
+#else
+	ret = MP3320A_WriteReg(&hmp3320, reg, val);
+#endif
+	if (ret != HAL_OK)
+		g_analog_i2c_errors++;
+}
+
 static void SetLedsState(ActiveLed activeLed)
 {
 	uint8_t chSet;
@@ -98,19 +130,7 @@ static void SetLedsState(ActiveLed activeLed)
 	default:           return;
 	}
 
-	HAL_StatusTypeDef ret;
-#if ADC_LED_SWITCH_IN_ISR
-	/* Регистровая запись с ограниченным спин-таймаутом: без HAL и HAL_GetTick(). */
-	ret = MP3320A_WriteReg_ISR(&hmp3320, MP3320A_REG_CH_SET, chSet);
-#else
-	/* Мьютекс здесь НЕ берётся: xSemaphoreTakeFromISR() для мьютексов не
-	   допускается (нет наследования приоритета, владелец не запоминается), а
-	   результат раньше игнорировался, то есть защиты не было вовсе. Взаимное
-	   исключение обеспечено иначе: после Init() I2C2 использует только ISR. */
-	ret = MP3320A_WriteReg(&hmp3320, MP3320A_REG_CH_SET, chSet);
-#endif
-	if (ret != HAL_OK)
-		g_analog_i2c_errors++;
+	WriteRegIrq(MP3320A_REG_CH_SET, chSet);
 }
 
 analog_driver::analog_driver()
@@ -163,6 +183,10 @@ void analog_driver::Init()
 	if (MP3320A_Config_Analog_PureCurrent(&hmp3320, 25.0f, 25.0f, 25.0f, 25.0f) != HAL_OK) {
 		Error_Handler();
 	}
+
+#if ANALOG_MP3320_SLEEP_IN_IDLE
+	ChipSleepSelfTest();
+#endif
 
 	xSemaphoreGive(iic2RxTxMutex);
 
@@ -304,7 +328,7 @@ void analog_driver::Start()
   /* Первый сценарий начнётся по первому update TIM5 (через ADC_CYCLE_US). */
   TIM5->CNT = 0;
   TIM5->SR  = 0;
-  TIM5->DIER |= TIM_DIER_UIE;
+  TIM5->DIER |= TIM_DIER_UIE | TIM_DIER_CC1IE;
   TIM5->CR1  |= TIM_CR1_CEN;
 }
 
@@ -318,9 +342,12 @@ void analog_driver::Stop()
   StopSequence();
   DMA_Halt();
 
+  TIM5->DIER &= ~TIM_DIER_CC1IE;
+
   s_inCycle  = false;
   _ActiveLed = Led_740;
   SetLedsState(Led_740_Bgd);
+  ChipSleep();           /* после этого I2C не трогаем >1.5 мс: следующее обращение - ChipWake() */
 }
 
 /* Запись отложенного тока светодиодов. Вызывается из прерывания сразу после
@@ -334,13 +361,62 @@ void analog_driver::ApplyPendingCurrent(void)
   const uint8_t code = s_currentCode;
   s_currentPending = false;
 
-  for (uint8_t reg = MP3320A_REG_ICH1; reg <= MP3320A_REG_ICH4; reg++) {
-#if ADC_LED_SWITCH_IN_ISR
-    if (MP3320A_WriteReg_ISR(&hmp3320, reg, code) != HAL_OK)
-#else
-    if (MP3320A_WriteReg(&hmp3320, reg, code) != HAL_OK)
-#endif
-      g_analog_i2c_errors++;
+  for (uint8_t reg = MP3320A_REG_ICH1; reg <= MP3320A_REG_ICH4; reg++)
+    WriteRegIrq(reg, code);
+}
+
+/* EN=0: MP3320A в standby до следующего пробуждения. Вызывать после ВСЕХ
+   I2C-операций сценария: следующие допустимы не раньше чем через 1.5 мс. */
+void analog_driver::ChipSleep(void)
+{
+  if (s_sleepEnabled)
+    WriteRegIrq(MP3320A_REG_MODE, s_modeOff);
+}
+
+/* EN=1: прерывание compare TIM5 за ANALOG_MP3320_WAKE_LEAD_US до сценария */
+void analog_driver::ChipWake(void)
+{
+  if (s_sleepEnabled)
+    WriteRegIrq(MP3320A_REG_MODE, s_modeOn);
+}
+
+/* Проверка, что MP3320A сохраняет регистры в standby (даташит этого прямо не
+   гарантирует). Если после EN=0 регистры не совпали - сон отключается, а чип
+   конфигурируется заново и остаётся включённым. Task-контекст, из Init(). */
+void analog_driver::ChipSleepSelfTest(void)
+{
+  static const uint8_t regs[] = { MP3320A_REG_CH_SET,
+                                  MP3320A_REG_ICH1, MP3320A_REG_ICH2,
+                                  MP3320A_REG_ICH3, MP3320A_REG_ICH4 };
+  uint8_t before[sizeof(regs)], after[sizeof(regs)], mode;
+  bool ok = true;
+
+  s_sleepEnabled = false;
+  g_analog_sleep_active = 0;
+
+  if (MP3320A_ReadReg(&hmp3320, MP3320A_REG_MODE, &mode) != HAL_OK)
+    return;
+  s_modeOn  = (uint8_t)(mode |  MP3320A_MODE_EN);
+  s_modeOff = (uint8_t)(mode & ~MP3320A_MODE_EN);
+
+  for (size_t i = 0; i < sizeof(regs); i++)
+    ok = ok && (MP3320A_ReadReg(&hmp3320, regs[i], &before[i]) == HAL_OK);
+
+  /* Enable(DISABLE) выдерживает паузу >1.5 мс после EN=0 */
+  ok = ok && (MP3320A_Enable(&hmp3320, DISABLE) == HAL_OK);
+
+  for (size_t i = 0; i < sizeof(regs); i++)
+    ok = ok && (MP3320A_ReadReg(&hmp3320, regs[i], &after[i]) == HAL_OK)
+            && (after[i] == before[i]);
+  ok = ok && (MP3320A_ReadReg(&hmp3320, MP3320A_REG_MODE, &mode) == HAL_OK)
+          && (mode == s_modeOff);
+
+  if (ok) {
+    s_sleepEnabled = true;          /* чип остаётся в standby до первого пробуждения */
+    g_analog_sleep_active = 1;
+  } else {
+    /* регистры потеряны или обмен не удался: возвращаем чип в рабочее состояние */
+    (void)MP3320A_Config_Analog_PureCurrent(&hmp3320, 25.0f, 25.0f, 25.0f, 25.0f);
   }
 }
 
@@ -600,6 +676,8 @@ bool analog_driver::TIM5_Init(void) {
 
     TIM5->PSC = 0;
     TIM5->ARR = ADC_CYCLE_TIM_Period;
+    TIM5->CCMR1 = 0;                     /* CC1 - выход, замороженный: только событие compare */
+    TIM5->CCR1  = ADC_WAKE_TIM_Compare;  /* пробуждение MP3320A */
 
     TIM5->EGR = TIM_EGR_UG;      /* загрузить ARR; флаг UIF сбрасываем ниже, */
     TIM5->CNT = 0;               /* иначе первое прерывание придёт сразу     */
@@ -733,6 +811,9 @@ void analog_driver::AdcConvCompleteDMA(void) {
 
     /* Светодиоды погашены, шина свободна - применяем отложенную смену тока */
     ApplyPendingCurrent();
+
+    /* Последней I2C-операцией сценария усыпляем MP3320A (EN=0) */
+    ChipSleep();
 
     HAL_GPIO_WritePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin, GPIO_PIN_RESET);
     return;

@@ -245,6 +245,17 @@ static void SystemPower_Config(void)
 /* USER CODE END PWR */
 }
 
+/**
+  * @brief  Compare-событие TIM5 CC1: пора будить MP3320A (EN=1) перед сценарием.
+  */
+void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
+{
+	if(htim->Instance == TIM5)
+	{
+		analog_driver::ChipWake();
+	}
+}
+
 /* USER CODE END 4 */
 
 /**
