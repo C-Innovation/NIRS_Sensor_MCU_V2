@@ -147,6 +147,14 @@ analog_driver::~analog_driver()
 
 void analog_driver::Init()
 {
+  /* Тайминги сценария (TIM3/TIM5) и шкала времени TIM2 рассчитаны от
+     NIRS_SYSCLK_HZ. Если тактирование или предделитель TIM2 не совпали
+     (например, CubeMX перегенерировал tim.c / main.cpp), измерения шли бы
+     с неверными интервалами - лучше остановиться сразу. */
+  if (SystemCoreClock != NIRS_SYSCLK_HZ ||
+      TIM2->PSC != (NIRS_SYSCLK_HZ / 1000000UL - 1UL))
+    Error_Handler();
+
   bool res = RCC_Init();
   if(!res)
   	Error_Handler();
@@ -585,7 +593,8 @@ bool analog_driver::ADC_Init()
   if(AdcInstance->CR & ADC_CR_ADEN)
     return false;
 
-  // PRESC = 0001 -> деление на 2 (комментарий "/1" в исходнике был неверен)
+  // PRESC = 0001 -> деление на 2: HCLK 80 МГц -> тактовая АЦП 40 МГц
+  // (при 160 МГц было 80 МГц - выше допустимой fADC микроконтроллера)
   MODIFY_REG(ADC12_COMMON->CCR, ADC_CCR_PRESC, (1UL << ADC_CCR_PRESC_Pos));
 
   // --- 2. Питание ---

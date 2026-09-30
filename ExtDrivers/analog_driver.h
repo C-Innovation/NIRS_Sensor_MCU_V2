@@ -33,12 +33,12 @@
  *  Остальное время цикла (ADC_CYCLE_US - 4*ADC_PHASE_US) светодиоды погашены,
  *  АЦП/DMA/TIM3 не работают, ядро спит в WFI (FreeRTOS idle).
  * ---------------------------------------------------------------------- */
-#define ADC_TIM_CLK_HZ      (uint32_t)160000000UL   /* тактовая TIM3/TIM5 (APB1 = HCLK) */
+#define ADC_TIM_CLK_HZ      (uint32_t)NIRS_SYSCLK_HZ   /* тактовая TIM3/TIM5 (APB1 = HCLK) */
 #define ADC_PHASE_US        (uint32_t)250U          /* длительность одного этапа        */
 #define ADC_PHASES_PER_CYCLE (uint32_t)4U
 #define ADC_CYCLE_US        (uint32_t)(1000000UL / NIRS_SAMPLE_RATE_HZ)
 
-/* TIM3: 160 МГц / 4 = 40 МГц; ARR = отсчёты за этап - 1 (ARR+1 = период) */
+/* TIM3: ADC_TIM_CLK_HZ / 4 (20 МГц при 80 МГц); ARR = отсчёты за этап - 1 (ARR+1 = период) */
 #define ADC_TIM_Prescaler   (uint32_t)(4-1)
 #define ADC_TIM_Period      (uint32_t)(ADC_PHASE_US * (ADC_TIM_CLK_HZ / (ADC_TIM_Prescaler + 1U) / 1000000UL) - 1U)
 /* TIM5 (32 бита): без предделителя, ARR = отсчёты за цикл - 1 */

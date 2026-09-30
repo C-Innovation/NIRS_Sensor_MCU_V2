@@ -171,7 +171,7 @@ void SystemClock_Config(void)
 	RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
 	RCC_OscInitStruct.PLL.PLLMBOOST = RCC_PLLMBOOST_DIV1;
 	RCC_OscInitStruct.PLL.PLLM = 4;
-	RCC_OscInitStruct.PLL.PLLN = 80;
+	RCC_OscInitStruct.PLL.PLLN = 40;    /* HSI16 / 4 * 40 / 2 = 80 МГц (было PLLN = 80 -> 160 МГц) */
 	RCC_OscInitStruct.PLL.PLLP = 2;
 	RCC_OscInitStruct.PLL.PLLQ = 2;
 	RCC_OscInitStruct.PLL.PLLR = 2;
@@ -193,7 +193,10 @@ void SystemClock_Config(void)
 	RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 	RCC_ClkInitStruct.APB3CLKDivider = RCC_HCLK_DIV1;
 
-	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
+	/* 80 МГц, диапазон напряжения 1: 2 такта ожидания flash (было 4 при 160 МГц) */
+	static_assert(16000000UL / 4 * 40 / 2 == NIRS_SYSCLK_HZ,
+	              "PLL в SystemClock_Config() не соответствует NIRS_SYSCLK_HZ");
+	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
 	{
 		Error_Handler();
 	}

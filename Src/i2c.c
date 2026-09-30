@@ -38,7 +38,10 @@ void MX_I2C2_Init(void)
 
   /* USER CODE END I2C2_Init 1 */
   hi2c2.Instance = I2C2;
-  hi2c2.Init.Timing = 0x00F07BFF;
+  /* Быстрый режим ~400 кГц при I2CCLK = PCLK1 = 80 МГц: PRESC=0, SCLDEL=7 (100 нс),
+     SDADEL=0, SCLH=0x3D (775 нс), SCLL=0x7F (1.6 мкс) - те же времена, что давало
+     прежнее значение 0x00F07BFF при 160 МГц. */
+  hi2c2.Init.Timing = 0x00703D7F;
   hi2c2.Init.OwnAddress1 = 0;
   hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
