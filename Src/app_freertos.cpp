@@ -37,6 +37,8 @@
 #include "nirs_contraction.h"
 #include "nn/nirs_nn_runtime.h"
 #include "nirs_tflite_api.hpp"
+#include "power_mgmt.h"
+#include "task.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -119,6 +121,17 @@ void StartMainTask(void *argument);
 void StartDspTask(void *argument);
 void StartAiTask(void *argument);
 void StartUsbTask(void *argument);
+
+/* Вызывается из USB-прерывания (TEMPLATE_Receive) после записи в кольцевой буфер:
+   будит MainTask вместо опроса раз в 1 мс. */
+void UsbRxNotifyFromISR(void)
+{
+  if (MainTaskHandle == NULL)
+    return;
+  BaseType_t woken = pdFALSE;
+  vTaskNotifyGiveFromISR((TaskHandle_t)MainTaskHandle, &woken);
+  portYIELD_FROM_ISR(woken);
+}
 
 void OnPacketReady(const uint8_t* data, size_t len)
 {
@@ -232,6 +245,8 @@ void MX_FREERTOS_Init(void) {
 void StartMainTask(void *argument)
 {
   /* USER CODE BEGIN MainTask */
+	/* HAL_GetTick -> тики FreeRTOS, TIM1 остановить (см. power_mgmt.h) */
+	Power_HalTickToRtos();
 	HAL_TIM_Base_Start_IT(&htim2);
   _analog_driver.Init();
   _analog_driver.Start();
@@ -241,17 +256,29 @@ void StartMainTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-  	Buffer_t buf = _MainDeserializer->process();
-		if(buf.len > 0)
-		{
+  	/* Ждём данные из USB (уведомление из TEMPLATE_Receive). Раньше здесь был
+  	   опрос osDelay(1), то есть 1000 пробуждений в секунду. Таймаут - только
+  	   страховка от потерянного уведомления. */
+  	(void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
 
-			UsbPacket_t pack = _UsbDataSerialazer->GetInputPacket(&buf.data[0], buf.len);//
-			osStatus_t status = osMessageQueuePut(dataUsbQueueHandle, &pack, 0, 0);
-			if (status != osOK) {
+  	/* process() разбирает не более одного пакета (или сдвигает поиск заголовка
+  	   на байт) за вызов, поэтому крутим, пока есть прогресс. */
+  	for(;;)
+  	{
+  		uint32_t availBefore = _UsbRingBuffer.available();
+  		Buffer_t buf = _MainDeserializer->process();
+  		if(buf.len > 0)
+  		{
+  			UsbPacket_t pack = _UsbDataSerialazer->GetInputPacket(&buf.data[0], buf.len);//
+  			osStatus_t status = osMessageQueuePut(dataUsbQueueHandle, &pack, 0, 0);
+  			if (status != osOK) {
 
-			}
-		}
-		osDelay(1);
+  			}
+  			continue;
+  		}
+  		if(_UsbRingBuffer.available() >= availBefore)
+  			break;    /* прогресса нет: ждём новые данные (или неполный пакет) */
+  	}
   }
   /* USER CODE END MainTask */
 }
@@ -296,7 +323,8 @@ void StartDspTask(void *argument)
 			}
 
 		}
-    osDelay(1);
+    /* Пауза osDelay(1) убрана: osMessageQueueGet(osWaitForever) сам блокирует
+       задачу, а лишний 1-мс таймаут мешал tickless idle. */
   }
   /* USER CODE END DspTask */
 }
@@ -315,10 +343,12 @@ void StartAiTask(void *argument)
     if (nirs_nn_setup() != 0) {
         Error_Handler();
     }
-    nirs_nn_init(&g_nn, 1000.0f);
+    /* Частота кадров = частота сценариев измерения (100 Гц). Все постоянные
+       времени ядра и предфильтра заданы в секундах и пересчитываются от неё. */
+    nirs_nn_init(&g_nn, (float)NIRS_SAMPLE_RATE_HZ);
 
     nirs_cfg_t cfg;
-    nirs_defaults(&cfg, 1000.0f);
+    nirs_defaults(&cfg, (float)NIRS_SAMPLE_RATE_HZ);
     nirs_init(&g_ref, &cfg);
 
     NirsFilteredData_t AiPack;
@@ -455,7 +485,7 @@ void StartUsbTask(void *argument)
 				}
 			}
 		}
-    osDelay(1);
+    /* Пауза osDelay(1) убрана по той же причине, что и в DspTask. */
   }
   /* USER CODE END UsbTask */
 }

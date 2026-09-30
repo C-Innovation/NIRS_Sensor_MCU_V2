@@ -176,9 +176,21 @@ HAL_StatusTypeDef MP3320A_Config_Analog_PureCurrent(MP3320A_HandleTypeDef *hmp,
         code[i] = (uint8_t)c;
     }
 
-    /* 1. Убеждаемся, что чип выключен на время конфигурации */
-    ret = MP3320A_UpdateReg(hmp, MP3320A_REG_MODE, MP3320A_MODE_EN, 0x00);
+    /* 1. Убеждаемся, что чип выключен на время конфигурации.
+          Даташит (Rev 1.1, REG01h): после перехода EN 1 -> 0 нужна пауза >1.5 мс
+          до ЛЮБОЙ следующей операции чтения/записи по I2C. Раньше EN сбрасывался
+          и сразу же шла следующая транзакция. При холодном старте EN уже 0 и
+          перехода нет, но при перезапуске МК без снятия питания с MP3320A
+          (EN=1 остался с прошлого запуска) транзакции попадали в это окно и
+          могли быть проигнорированы. Поэтому сбрасываем EN только если он был
+          установлен, и через MP3320A_Enable(), которая выдерживает паузу. */
+    uint8_t mode;
+    ret = MP3320A_ReadReg(hmp, MP3320A_REG_MODE, &mode);
     if (ret != HAL_OK) return ret;
+    if (mode & MP3320A_MODE_EN) {
+        ret = MP3320A_Enable(hmp, DISABLE);
+        if (ret != HAL_OK) return ret;
+    }
 
     /* 2. Отключаем Charge Pump (EN_CP = 0) */
     ret = MP3320A_UpdateReg(hmp, MP3320A_REG_MODE, MP3320A_MODE_EN_CP, 0x00);
